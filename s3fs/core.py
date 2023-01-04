@@ -889,7 +889,7 @@ class S3FileSystem(AsyncFileSystem):
             raise ValueError("S3 does not support touching existent files")
         try:
             write_result = await self._call_s3(
-                "put_object", Bucket=bucket, Key=key, **kwargs
+                "put_object", Bucket=bucket, ACL=self.acl, Key=key, **kwargs
             )
         except ClientError as ex:
             raise translate_boto_error(ex)
