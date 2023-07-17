@@ -22,6 +22,7 @@ from s3fs.core import S3FileSystem
 from s3fs.utils import ignoring, SSEParams
 from botocore.exceptions import NoCredentialsError
 from fsspec.asyn import sync
+from fsspec.callbacks import Callback
 from packaging import version
 
 test_bucket_name = "test"
@@ -84,11 +85,17 @@ def s3_base():
         os.environ["AWS_SECRET_ACCESS_KEY"] = "foo"
     if "AWS_ACCESS_KEY_ID" not in os.environ:
         os.environ["AWS_ACCESS_KEY_ID"] = "foo"
-    proc = subprocess.Popen(shlex.split("moto_server s3 -p %s" % port))
+    proc = subprocess.Popen(
+        shlex.split("moto_server s3 -p %s" % port),
+        stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+    )
 
     timeout = 5
     while timeout > 0:
         try:
+            print("polling for moto server")
             r = requests.get(endpoint_uri)
             if r.ok:
                 break
@@ -96,7 +103,9 @@ def s3_base():
             pass
         timeout -= 0.1
         time.sleep(0.1)
+    print("server up")
     yield
+    print("moto done")
     proc.terminate()
     proc.wait()
 
@@ -163,7 +172,7 @@ def expect_errno(expected_errno):
 
 
 def test_simple(s3):
-    data = b"a" * (10 * 2 ** 20)
+    data = b"a" * (10 * 2**20)
 
     with s3.open(a, "wb") as f:
         f.write(data)
@@ -174,9 +183,9 @@ def test_simple(s3):
         assert out == data
 
 
-@pytest.mark.parametrize("default_cache_type", ["none", "bytes", "mmap"])
+@pytest.mark.parametrize("default_cache_type", ["none", "bytes", "mmap", "readahead"])
 def test_default_cache_type(s3, default_cache_type):
-    data = b"a" * (10 * 2 ** 20)
+    data = b"a" * (10 * 2**20)
     s3 = S3FileSystem(
         anon=False,
         default_cache_type=default_cache_type,
@@ -365,7 +374,7 @@ def test_checksum(s3):
     s3.checksum(path1, refresh=True)
 
 
-test_xattr_sample_metadata = {"test_xattr": "1"}
+test_xattr_sample_metadata = {"testxattr": "1"}
 
 
 def test_xattr(s3):
@@ -380,7 +389,7 @@ def test_xattr(s3):
         },
     }
 
-    sync(
+    resp = sync(
         s3.loop,
         s3.s3.put_object,
         Bucket=bucket,
@@ -397,18 +406,16 @@ def test_xattr(s3):
         in sync(s3.loop, s3.s3.get_object_acl, Bucket=bucket, Key=key)["Grants"]
     )
 
-    assert (
-        s3.getxattr(filename, "test_xattr") == test_xattr_sample_metadata["test_xattr"]
-    )
-    assert s3.metadata(filename) == {"test-xattr": "1"}  # note _ became -
+    assert s3.getxattr(filename, "testxattr") == test_xattr_sample_metadata["testxattr"]
+    assert s3.metadata(filename) == {"testxattr": "1"}  # note _ became -
 
     s3file = s3.open(filename)
-    assert s3file.getxattr("test_xattr") == test_xattr_sample_metadata["test_xattr"]
-    assert s3file.metadata() == {"test-xattr": "1"}  # note _ became -
+    assert s3file.getxattr("testxattr") == test_xattr_sample_metadata["testxattr"]
+    assert s3file.metadata() == {"testxattr": "1"}  # note _ became -
 
-    s3file.setxattr(test_xattr="2")
-    assert s3file.getxattr("test_xattr") == "2"
-    s3file.setxattr(**{"test_xattr": None})
+    s3file.setxattr(testxattr="2")
+    assert s3file.getxattr("testxattr") == "2"
+    s3file.setxattr(**{"testxattr": None})
     assert s3file.metadata() == {}
     assert s3.cat(filename) == body
 
@@ -567,11 +574,13 @@ def test_rm(s3):
     #    s3.rm(test_bucket_name + '/nonexistent')
     with pytest.raises(FileNotFoundError):
         s3.rm("nonexistent")
-    s3.rm(test_bucket_name + "/nested", recursive=True)
+    out = s3.rm(test_bucket_name + "/nested", recursive=True)
+    assert test_bucket_name + "/nested/nested2/file1" in out
     assert not s3.exists(test_bucket_name + "/nested/nested2/file1")
 
     # whole bucket
-    s3.rm(test_bucket_name, recursive=True)
+    out = s3.rm(test_bucket_name, recursive=True)
+    assert test_bucket_name + "/2014-01-01.csv" in out
     assert not s3.exists(test_bucket_name + "/2014-01-01.csv")
     assert not s3.exists(test_bucket_name)
 
@@ -862,16 +871,16 @@ def test_copy(s3):
 
 
 def test_copy_managed(s3):
-    data = b"abc" * 12 * 2 ** 20
+    data = b"abc" * 12 * 2**20
     fn = test_bucket_name + "/test/biggerfile"
     with s3.open(fn, "wb") as f:
         f.write(data)
-    sync(s3.loop, s3._copy_managed, fn, fn + "2", size=len(data), block=5 * 2 ** 20)
+    sync(s3.loop, s3._copy_managed, fn, fn + "2", size=len(data), block=5 * 2**20)
     assert s3.cat(fn) == s3.cat(fn + "2")
     with pytest.raises(ValueError):
-        sync(s3.loop, s3._copy_managed, fn, fn + "3", size=len(data), block=4 * 2 ** 20)
+        sync(s3.loop, s3._copy_managed, fn, fn + "3", size=len(data), block=4 * 2**20)
     with pytest.raises(ValueError):
-        sync(s3.loop, s3._copy_managed, fn, fn + "3", size=len(data), block=6 * 2 ** 30)
+        sync(s3.loop, s3._copy_managed, fn, fn + "3", size=len(data), block=6 * 2**30)
 
 
 @pytest.mark.parametrize("recursive", [True, False])
@@ -898,7 +907,7 @@ def test_get_put(s3, tmpdir):
 
 def test_get_put_big(s3, tmpdir):
     test_file = str(tmpdir.join("test"))
-    data = b"1234567890A" * 2 ** 20
+    data = b"1234567890A" * 2**20
     open(test_file, "wb").write(data)
 
     s3.put(test_file, test_bucket_name + "/bigfile")
@@ -907,7 +916,46 @@ def test_get_put_big(s3, tmpdir):
     assert open(test_file, "rb").read() == data
 
 
-@pytest.mark.parametrize("size", [2 ** 10, 2 ** 20, 10 * 2 ** 20])
+def test_get_put_with_callback(s3, tmpdir):
+    test_file = str(tmpdir.join("test.json"))
+
+    class BranchingCallback(Callback):
+        def branch(self, path_1, path_2, kwargs):
+            kwargs["callback"] = BranchingCallback()
+
+    cb = BranchingCallback()
+    s3.get(test_bucket_name + "/test/accounts.1.json", test_file, callback=cb)
+    assert cb.size == 1
+    assert cb.value == 1
+
+    cb = BranchingCallback()
+    s3.put(test_file, test_bucket_name + "/temp", callback=cb)
+    assert cb.size == 1
+    assert cb.value == 1
+
+
+def test_get_file_with_callback(s3, tmpdir):
+    test_file = str(tmpdir.join("test.json"))
+
+    cb = Callback()
+    s3.get_file(test_bucket_name + "/test/accounts.1.json", test_file, callback=cb)
+    assert cb.size == os.stat(test_file).st_size
+    assert cb.value == cb.size
+
+
+@pytest.mark.parametrize("size", [2**10, 10 * 2**20])
+def test_put_file_with_callback(s3, tmpdir, size):
+    test_file = str(tmpdir.join("test.json"))
+    with open(test_file, "wb") as f:
+        f.write(b"1234567890A" * size)
+
+    cb = Callback()
+    s3.put_file(test_file, test_bucket_name + "/temp", callback=cb)
+    assert cb.size == os.stat(test_file).st_size
+    assert cb.value == cb.size
+
+
+@pytest.mark.parametrize("size", [2**10, 2**20, 10 * 2**20])
 def test_pipe_cat_big(s3, size):
     data = b"1234567890A" * size
     s3.pipe(test_bucket_name + "/bigfile", data)
@@ -976,7 +1024,7 @@ def test_errors_cause_preservings(monkeypatch, s3):
 
 def test_read_small(s3):
     fn = test_bucket_name + "/2014-01-01.csv"
-    with s3.open(fn, "rb", block_size=10) as f:
+    with s3.open(fn, "rb", block_size=10, cache_type="bytes") as f:
         out = []
         while True:
             data = f.read(3)
@@ -1078,7 +1126,7 @@ def test_write_small_with_acl(s3):
 
 def test_write_large(s3):
     "flush() chunks buffer when processing large singular payload"
-    mb = 2 ** 20
+    mb = 2**20
     payload_size = int(2.5 * 5 * mb)
     payload = b"0" * payload_size
 
@@ -1091,7 +1139,7 @@ def test_write_large(s3):
 
 def test_write_limit(s3):
     "flush() respects part_max when processing large singular payload"
-    mb = 2 ** 20
+    mb = 2**20
     block_size = 15 * mb
     payload_size = 44 * mb
     payload = b"0" * payload_size
@@ -1125,9 +1173,9 @@ def test_write_large_secure(s3):
     s3.mkdir("mybucket")
 
     with s3.open("mybucket/myfile", "wb") as f:
-        f.write(b"hello hello" * 10 ** 6)
+        f.write(b"hello hello" * 10**6)
 
-    assert s3.cat("mybucket/myfile") == b"hello hello" * 10 ** 6
+    assert s3.cat("mybucket/myfile") == b"hello hello" * 10**6
 
 
 def test_write_fails(s3):
@@ -1146,21 +1194,21 @@ def test_write_fails(s3):
 
 def test_write_blocks(s3):
     with s3.open(test_bucket_name + "/temp", "wb") as f:
-        f.write(b"a" * 2 * 2 ** 20)
-        assert f.buffer.tell() == 2 * 2 ** 20
+        f.write(b"a" * 2 * 2**20)
+        assert f.buffer.tell() == 2 * 2**20
         assert not (f.parts)
         f.flush()
-        assert f.buffer.tell() == 2 * 2 ** 20
+        assert f.buffer.tell() == 2 * 2**20
         assert not (f.parts)
-        f.write(b"a" * 2 * 2 ** 20)
-        f.write(b"a" * 2 * 2 ** 20)
+        f.write(b"a" * 2 * 2**20)
+        f.write(b"a" * 2 * 2**20)
         assert f.mpu
         assert f.parts
-    assert s3.info(test_bucket_name + "/temp")["size"] == 6 * 2 ** 20
-    with s3.open(test_bucket_name + "/temp", "wb", block_size=10 * 2 ** 20) as f:
-        f.write(b"a" * 15 * 2 ** 20)
+    assert s3.info(test_bucket_name + "/temp")["size"] == 6 * 2**20
+    with s3.open(test_bucket_name + "/temp", "wb", block_size=10 * 2**20) as f:
+        f.write(b"a" * 15 * 2**20)
         assert f.buffer.tell() == 0
-    assert s3.info(test_bucket_name + "/temp")["size"] == 15 * 2 ** 20
+    assert s3.info(test_bucket_name + "/temp")["size"] == 15 * 2**20
 
 
 def test_readline(s3):
@@ -1184,7 +1232,7 @@ def test_readline_empty(s3):
 
 
 def test_readline_blocksize(s3):
-    data = b"ab\n" + b"a" * (10 * 2 ** 20) + b"\nab"
+    data = b"ab\n" + b"a" * (10 * 2**20) + b"\nab"
     with s3.open(a, "wb") as f:
         f.write(data)
     with s3.open(a, "rb") as f:
@@ -1193,7 +1241,7 @@ def test_readline_blocksize(s3):
         assert result == expected
 
         result = f.readline()
-        expected = b"a" * (10 * 2 ** 20) + b"\n"
+        expected = b"a" * (10 * 2**20) + b"\n"
         assert result == expected
 
         result = f.readline()
@@ -1255,12 +1303,12 @@ def test_writable(s3):
 
 def test_merge(s3):
     with s3.open(a, "wb") as f:
-        f.write(b"a" * 10 * 2 ** 20)
+        f.write(b"a" * 10 * 2**20)
 
     with s3.open(b, "wb") as f:
-        f.write(b"a" * 10 * 2 ** 20)
+        f.write(b"a" * 10 * 2**20)
     s3.merge(test_bucket_name + "/joined", [a, b])
-    assert s3.info(test_bucket_name + "/joined")["size"] == 2 * 10 * 2 ** 20
+    assert s3.info(test_bucket_name + "/joined")["size"] == 2 * 10 * 2**20
 
 
 def test_append(s3):
@@ -1273,24 +1321,24 @@ def test_append(s3):
     assert s3.cat(test_bucket_name + "/nested/file1") == data + b"extra"
 
     with s3.open(a, "wb") as f:
-        f.write(b"a" * 10 * 2 ** 20)
+        f.write(b"a" * 10 * 2**20)
     with s3.open(a, "ab") as f:
         pass  # append, no write, big file
-    assert s3.cat(a) == b"a" * 10 * 2 ** 20
+    assert s3.cat(a) == b"a" * 10 * 2**20
 
     with s3.open(a, "ab") as f:
         assert f.parts is None
         f._initiate_upload()
         assert f.parts
-        assert f.tell() == 10 * 2 ** 20
+        assert f.tell() == 10 * 2**20
         f.write(b"extra")  # append, small write, big file
-    assert s3.cat(a) == b"a" * 10 * 2 ** 20 + b"extra"
+    assert s3.cat(a) == b"a" * 10 * 2**20 + b"extra"
 
     with s3.open(a, "ab") as f:
-        assert f.tell() == 10 * 2 ** 20 + 5
-        f.write(b"b" * 10 * 2 ** 20)  # append, big write, big file
-        assert f.tell() == 20 * 2 ** 20 + 5
-    assert s3.cat(a) == b"a" * 10 * 2 ** 20 + b"extra" + b"b" * 10 * 2 ** 20
+        assert f.tell() == 10 * 2**20 + 5
+        f.write(b"b" * 10 * 2**20)  # append, big write, big file
+        assert f.tell() == 20 * 2**20 + 5
+    assert s3.cat(a) == b"a" * 10 * 2**20 + b"extra" + b"b" * 10 * 2**20
 
     # Keep Head Metadata
     head = dict(
@@ -1304,7 +1352,6 @@ def test_append(s3):
         ServerSideEncryption="AES256",
         StorageClass="REDUCED_REDUNDANCY",
         WebsiteRedirectLocation="https://www.example.com/",
-        BucketKeyEnabled=False,
     )
     with s3.open(a, "wb", **head) as f:
         f.write(b"data")
@@ -1412,14 +1459,14 @@ def test_upload_with_s3fs_prefix(s3):
     path = "s3://test/prefix/key"
 
     with s3.open(path, "wb") as f:
-        f.write(b"a" * (10 * 2 ** 20))
+        f.write(b"a" * (10 * 2**20))
 
     with s3.open(path, "ab") as f:
-        f.write(b"b" * (10 * 2 ** 20))
+        f.write(b"b" * (10 * 2**20))
 
 
 def test_multipart_upload_blocksize(s3):
-    blocksize = 5 * (2 ** 20)
+    blocksize = 5 * (2**20)
     expected_parts = 3
 
     s3f = s3.open(a, "wb", block_size=blocksize)
@@ -1461,8 +1508,11 @@ def test_tags(s3):
     assert s3.get_tags(fname) == tagset
 
 
-def test_versions(s3):
-    versioned_file = versioned_bucket_name + "/versioned_file"
+@pytest.mark.parametrize("prefix", ["", "/dir", "/dir/subdir"])
+def test_versions(s3, prefix):
+    parent = versioned_bucket_name + prefix
+    versioned_file = parent + "/versioned_file"
+
     s3 = S3FileSystem(
         anon=False, version_aware=True, client_kwargs={"endpoint_url": endpoint_uri}
     )
@@ -1489,6 +1539,17 @@ def test_versions(s3):
     with s3.open(versioned_file, version_id=first_version) as fo:
         assert fo.version_id == first_version
         assert fo.read() == b"1"
+
+    versioned_file_v1 = f"{versioned_file}?versionId={first_version}"
+    versioned_file_v2 = f"{versioned_file}?versionId={second_version}"
+
+    assert s3.ls(parent) == [versioned_file]
+    assert set(s3.ls(parent, versions=True)) == {versioned_file_v1, versioned_file_v2}
+
+    assert s3.exists(versioned_file_v1)
+    assert s3.info(versioned_file_v1)
+    assert s3.exists(versioned_file_v2)
+    assert s3.info(versioned_file_v2)
 
 
 def test_list_versions_many(s3):
@@ -1554,6 +1615,12 @@ def test_versioned_file_fullpath(s3):
         assert fo.version_id == version_id
         assert fo.read() == b"1"
 
+    versions = s3.object_version_info(versioned_file)
+    version_ids = [version["VersionId"] for version in versions]
+    assert set(s3.ls(versioned_bucket_name, versions=True)) == {
+        f"{versioned_file}?versionId={vid}" for vid in version_ids
+    }
+
 
 def test_versions_unaware(s3):
     versioned_file = versioned_bucket_name + "/versioned_file3"
@@ -1572,6 +1639,33 @@ def test_versions_unaware(s3):
     with pytest.raises(ValueError):
         with s3.open(versioned_file, version_id="0"):
             fo.read()
+
+
+def test_versions_dircached(s3):
+    versioned_file = versioned_bucket_name + "/dir/versioned_file"
+    s3 = S3FileSystem(
+        anon=False, version_aware=True, client_kwargs={"endpoint_url": endpoint_uri}
+    )
+    with s3.open(versioned_file, "wb") as fo:
+        fo.write(b"1")
+    first_version = fo.version_id
+    with s3.open(versioned_file, "wb") as fo:
+        fo.write(b"2")
+    second_version = fo.version_id
+    s3.find(versioned_bucket_name)
+    cached = s3.dircache[versioned_bucket_name + "/dir"][0]
+
+    assert cached.get("VersionId") == second_version
+    assert s3.info(versioned_file) == cached
+
+    assert (
+        s3.info(versioned_file, version_id=first_version).get("VersionId")
+        == first_version
+    )
+    assert (
+        s3.info(versioned_file, version_id=second_version).get("VersionId")
+        == second_version
+    )
 
 
 def test_text_io__stream_wrapper_works(s3):
@@ -1633,26 +1727,26 @@ def test_change_defaults_only_subsequent():
         S3FileSystem.cachable = False  # don't reuse instances with same pars
 
         fs_default = S3FileSystem(client_kwargs={"endpoint_url": endpoint_uri})
-        assert fs_default.default_block_size == 5 * (1024 ** 2)
+        assert fs_default.default_block_size == 5 * (1024**2)
 
         fs_overridden = S3FileSystem(
-            default_block_size=64 * (1024 ** 2),
+            default_block_size=64 * (1024**2),
             client_kwargs={"endpoint_url": endpoint_uri},
         )
-        assert fs_overridden.default_block_size == 64 * (1024 ** 2)
+        assert fs_overridden.default_block_size == 64 * (1024**2)
 
         # Suppose I want all subsequent file systems to have a block size of 1 GiB
         # instead of 5 MiB:
-        S3FileSystem.default_block_size = 1024 ** 3
+        S3FileSystem.default_block_size = 1024**3
 
         fs_big = S3FileSystem(client_kwargs={"endpoint_url": endpoint_uri})
-        assert fs_big.default_block_size == 1024 ** 3
+        assert fs_big.default_block_size == 1024**3
 
         # Test the other file systems created to see if their block sizes changed
-        assert fs_overridden.default_block_size == 64 * (1024 ** 2)
-        assert fs_default.default_block_size == 5 * (1024 ** 2)
+        assert fs_overridden.default_block_size == 64 * (1024**2)
+        assert fs_default.default_block_size == 5 * (1024**2)
     finally:
-        S3FileSystem.default_block_size = 5 * (1024 ** 2)
+        S3FileSystem.default_block_size = 5 * (1024**2)
         S3FileSystem.cachable = True
 
 
@@ -1779,10 +1873,22 @@ def test_get_directories(s3, tmpdir):
     s3.touch(test_bucket_name + "/dir/dirkey")
     s3.touch(test_bucket_name + "/dir/dir/key")
     d = str(tmpdir)
-    s3.get(test_bucket_name + "/dir", d, recursive=True)
+
+    # Target directory with trailing slash
+    s3.get(test_bucket_name + "/dir/", d, recursive=True)
     assert {"dirkey", "dir"} == set(os.listdir(d))
     assert ["key"] == os.listdir(os.path.join(d, "dir"))
     assert {"key0", "key1"} == set(os.listdir(os.path.join(d, "dirkey")))
+
+    local_fs = fsspec.filesystem("file")
+    local_fs.rm(os.path.join(d, "dir"), recursive=True)
+    local_fs.rm(os.path.join(d, "dirkey"), recursive=True)
+
+    # Target directory without trailing slash
+    s3.get(test_bucket_name + "/dir", d, recursive=True)
+    assert ["dir"] == os.listdir(d)
+    assert {"dirkey", "dir"} == set(os.listdir(os.path.join(d, "dir")))
+    assert {"key0", "key1"} == set(os.listdir(os.path.join(d, "dir", "dirkey")))
 
 
 def test_seek_reads(s3):
@@ -2024,10 +2130,17 @@ def test_put_single(s3, tmpdir):
     fn = os.path.join(str(tmpdir), "dir")
     os.mkdir(fn)
     open(os.path.join(fn, "abc"), "w").write("text")
+
+    # Put with trailing slash
     s3.put(fn + "/", test_bucket_name)  # no-op, no files
     assert not s3.exists(test_bucket_name + "/abc")
     assert not s3.exists(test_bucket_name + "/dir")
-    s3.put(fn + "/", test_bucket_name, recursive=True)  # no-op, no files
+
+    s3.put(fn + "/", test_bucket_name, recursive=True)
+    assert s3.cat(test_bucket_name + "/abc") == b"text"
+
+    # Put without trailing slash
+    s3.put(fn, test_bucket_name, recursive=True)
     assert s3.cat(test_bucket_name + "/dir/abc") == b"text"
 
 
@@ -2043,6 +2156,29 @@ def test_shallow_find(s3):
         test_bucket_name, maxdepth=1, withdirs=True
     )
     assert s3.ls(test_bucket_name) == s3.glob(test_bucket_name + "/*")
+
+
+def test_multi_find(s3):
+    s3.mkdir("bucket/test")
+    s3.mkdir("bucket/test/sub")
+    s3.write_text("bucket/test/file.txt", "some_text")
+    s3.write_text("bucket/test/sub/file.txt", "some_text")
+
+    out1 = s3.find("bucket", withdirs=True)
+    out2 = s3.find("bucket", withdirs=True)
+    assert (
+        out1
+        == out2
+        == [
+            "bucket/test",
+            "bucket/test/file.txt",
+            "bucket/test/sub",
+            "bucket/test/sub/file.txt",
+        ]
+    )
+    out1 = s3.find("bucket", withdirs=False)
+    out2 = s3.find("bucket", withdirs=False)
+    assert out1 == out2 == ["bucket/test/file.txt", "bucket/test/sub/file.txt"]
 
 
 def test_version_sizes(s3):
@@ -2142,12 +2278,12 @@ def test_raise_exception_when_file_has_changed_during_reading(s3):
 def test_s3fs_etag_preserving_multipart_copy(monkeypatch, s3):
     # Set this to a lower value so that we can actually
     # test this without creating giant objects in memory
-    monkeypatch.setattr(s3fs.core, "MANAGED_COPY_THRESHOLD", 5 * 2 ** 20)
+    monkeypatch.setattr(s3fs.core, "MANAGED_COPY_THRESHOLD", 5 * 2**20)
 
     test_file1 = test_bucket_name + "/test/multipart-upload.txt"
     test_file2 = test_bucket_name + "/test/multipart-upload-copy.txt"
 
-    with s3.open(test_file1, "wb", block_size=5 * 2 ** 21) as stream:
+    with s3.open(test_file1, "wb", block_size=5 * 2**21) as stream:
         for _ in range(5):
             stream.write(b"b" * (stream.blocksize + random.randrange(200)))
 
@@ -2234,6 +2370,25 @@ def test_lsdir(s3):
     assert d in s3.ls(test_bucket_name)
 
 
+def test_rm_recursive_folder(s3):
+    s3.touch(test_bucket_name + "/sub/file")
+    s3.rm(test_bucket_name + "/sub", recursive=True)
+    assert not s3.exists(test_bucket_name + "/sub/file")
+    assert not s3.exists(test_bucket_name + "/sub")
+
+    s3.touch(test_bucket_name + "/sub/file")
+    s3.touch(test_bucket_name + "/sub/")  # placeholder
+    s3.rm(test_bucket_name + "/sub", recursive=True)
+    assert not s3.exists(test_bucket_name + "/sub/file")
+    assert not s3.exists(test_bucket_name + "/sub")
+
+    s3.touch(test_bucket_name + "/sub/file")
+    s3.rm(test_bucket_name, recursive=True)
+    assert not s3.exists(test_bucket_name + "/sub/file")
+    assert not s3.exists(test_bucket_name + "/sub")
+    assert not s3.exists(test_bucket_name)
+
+
 def test_copy_file_without_etag(s3, monkeypatch):
 
     s3.touch(test_bucket_name + "/copy_tests/file")
@@ -2307,3 +2462,177 @@ def test_exists_isdir(s3):
     bad_path = "s3://nyc-tlc-asdfasdf/trip data/"
     assert not s3.exists(bad_path)
     assert not s3.isdir(bad_path)
+
+
+def test_list_del_multipart(s3):
+    path = test_bucket_name + "/afile"
+    f = s3.open(path, "wb")
+    f.write(b"0" * 6 * 2**20)
+
+    out = s3.list_multipart_uploads(test_bucket_name)
+    assert [_ for _ in out if _["Key"] == "afile"]
+
+    s3.clear_multipart_uploads(test_bucket_name)
+    out = s3.list_multipart_uploads(test_bucket_name)
+    assert not [_ for _ in out if _["Key"] == "afile"]
+
+    try:
+        f.close()  # may error
+    except Exception:
+        pass
+
+
+def test_split_path(s3):
+    buckets = [
+        "my-test-bucket",
+        "arn:aws:s3:region:123456789012:accesspoint/my-access-point-name",
+        "arn:aws:s3-outposts:region:123456789012:outpost/outpost-id/bucket/my-test-bucket",
+        "arn:aws:s3-outposts:region:123456789012:outpost/outpost-id/accesspoint/my-accesspoint-name",
+        "arn:aws:s3-object-lambda:region:123456789012:accesspoint/my-lambda-object-name",
+    ]
+    test_key = "my/test/path"
+    for test_bucket in buckets:
+        bucket, key, _ = s3.split_path("s3://" + test_bucket + "/" + test_key)
+        assert bucket == test_bucket
+        assert key == test_key
+
+
+def test_cp_directory_recursive(s3):
+    src = test_bucket_name + "/src"
+    src_file = src + "/file"
+    s3.mkdir(src)
+    s3.touch(src_file)
+
+    target = test_bucket_name + "/target"
+
+    # cp without slash
+    assert not s3.exists(target)
+    for loop in range(2):
+        s3.cp(src, target, recursive=True)
+        assert s3.isdir(target)
+
+        if loop == 0:
+            correct = [target + "/file"]
+            assert s3.find(target) == correct
+        else:
+            correct = [target + "/file", target + "/src/file"]
+            assert sorted(s3.find(target)) == correct
+
+    s3.rm(target, recursive=True)
+
+    # cp with slash
+    assert not s3.exists(target)
+    for loop in range(2):
+        s3.cp(src + "/", target, recursive=True)
+        assert s3.isdir(target)
+        correct = [target + "/file"]
+        assert s3.find(target) == correct
+
+
+def test_get_directory_recursive(s3, tmpdir):
+    src = test_bucket_name + "/src"
+    src_file = src + "/file"
+    s3.mkdir(src)
+    s3.touch(src_file)
+
+    target = os.path.join(tmpdir, "target")
+    target_fs = fsspec.filesystem("file")
+
+    # get without slash
+    assert not target_fs.exists(target)
+    for loop in range(2):
+        s3.get(src, target, recursive=True)
+        assert target_fs.isdir(target)
+
+        if loop == 0:
+            assert target_fs.find(target) == [os.path.join(target, "file")]
+        else:
+            assert sorted(target_fs.find(target)) == [
+                os.path.join(target, "file"),
+                os.path.join(target, "src", "file"),
+            ]
+
+    target_fs.rm(target, recursive=True)
+
+    # get with slash
+    assert not target_fs.exists(target)
+    for loop in range(2):
+        s3.get(src + "/", target, recursive=True)
+        assert target_fs.isdir(target)
+        assert target_fs.find(target) == [os.path.join(target, "file")]
+
+
+def test_put_directory_recursive(s3, tmpdir):
+    src = os.path.join(tmpdir, "src")
+    src_file = os.path.join(src, "file")
+    source_fs = fsspec.filesystem("file")
+    source_fs.mkdir(src)
+    source_fs.touch(src_file)
+
+    target = test_bucket_name + "/target"
+
+    # put without slash
+    assert not s3.exists(target)
+    for loop in range(2):
+        s3.put(src, target, recursive=True)
+        assert s3.isdir(target)
+
+        if loop == 0:
+            assert s3.find(target) == [target + "/file"]
+        else:
+            assert sorted(s3.find(target)) == [target + "/file", target + "/src/file"]
+
+    s3.rm(target, recursive=True)
+
+    # put with slash
+    assert not s3.exists(target)
+    for loop in range(2):
+        s3.put(src + "/", target, recursive=True)
+        assert s3.isdir(target)
+        assert s3.find(target) == [target + "/file"]
+
+
+def test_cp_two_files(s3):
+    src = test_bucket_name + "/src"
+    file0 = src + "/file0"
+    file1 = src + "/file1"
+    s3.mkdir(src)
+    s3.touch(file0)
+    s3.touch(file1)
+
+    target = test_bucket_name + "/target"
+    assert not s3.exists(target)
+
+    s3.cp([file0, file1], target)
+
+    assert s3.isdir(target)
+    assert sorted(s3.find(target)) == [
+        target + "/file0",
+        target + "/file1",
+    ]
+
+
+def test_async_stream(s3_base):
+    fn = test_bucket_name + "/target"
+    data = b"hello world" * 1000
+    out = []
+
+    async def read_stream():
+        fs = S3FileSystem(
+            anon=False,
+            client_kwargs={"endpoint_url": endpoint_uri},
+            skip_instance_cache=True,
+        )
+        await fs._mkdir(test_bucket_name)
+        await fs._pipe(fn, data)
+        f = await fs.open_async(fn, mode="rb", block_seze=1000)
+        while True:
+            got = await f.read(1000)
+            assert f.size == len(data)
+            assert f.tell()
+            if not got:
+                break
+            out.append(got)
+
+    asyncio.run(read_stream())
+    assert b"".join(out) == data

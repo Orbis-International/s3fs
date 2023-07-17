@@ -1,6 +1,106 @@
 Changelog
 =========
 
+2023.6.0
+--------
+
+- allow versions in info.exists (#746)
+- streaming file to update it's size for tell (#745, 741)
+
+
+2023.5.0
+--------
+
+- Fix "_" in xattrs tests (#732)
+- Fix file pointer already at end of file when retrying put (#731)
+- Fix repeated find corrupting cache (#730)
+- Remove duplicate class definition (#727)
+- return list of deleted keys in bulk deleted (#726)
+
+
+2023.4.0
+--------
+
+- Add streaming async read file (#722)
+- Doc fixes (#721)
+- aiobotocore to 2.5.0 (#710)
+
+2023.3.0
+--------
+
+- Allow setting endpoint_url as top-level kwarg (#704)
+- minimum python version 3.8 (#702)
+- Update docs config (#697)
+- get/put/cp recursive extra tests (#691)
+
+2023.1.0
+--------
+
+- parse lambda ARNs (#686)
+- recursive on chmod (#679)
+- default cache to be readahead (#678)
+- temporary redirects in headBucket (#676)
+- async iterator for listings (#670)
+
+
+2022.11.0
+---------
+
+- optionally listing versions with ls (#661)
+
+2022.10.0
+---------
+
+- directory cache race condition (#655)
+- version aware find (#654)
+
+2022.8.1
+--------
+
+(no change)
+
+2022.8.0
+--------
+
+- aiobotocore 2.4.0 (#643)
+- del/list multipart uploads (#645)
+- disallow prerelease aiohttp (#640)
+- docs syntax (#634)
+
+
+2022.7.1
+--------
+
+No changes
+
+2022.7.0
+--------
+
+- aiobotocore 2.3.4 (#633)
+
+
+2022.5.0
+--------
+
+- aiobotocore 2.3 (#622, fixes #558)
+- rate limiting (#619, #620)
+
+2022.3.0
+--------
+
+- pre-commit (#612)
+- aiobotocore 2.2 (#609)
+- empty ETag (#605)
+- HTTPClientError retry (#597)
+- new callbacks support (#590)
+
+2022.02.0
+---------
+
+- callbacks fixes (#594, 590)
+- drop py36 (#582)
+- metadata fixes (#575, 579)
+
 2022.01.0
 ---------
 
@@ -112,10 +212,10 @@ Version 0.4.0
 - Always use multipart uploads when not autocommitting (:pr:`243`) by `Marius van Niekerk`_
 - Create ``CONTRIBUTING.md`` (:pr:`248`) by `Jacob Tomlinson`_
 - Use autofunction for ``S3Map`` sphinx autosummary (:pr:`251`) by `James Bourbeau`_
-- Miscellaneous doc updates (:pr:`252`) by `James Bourbeau`_ 
+- Miscellaneous doc updates (:pr:`252`) by `James Bourbeau`_
 - Support for Python 3.8 (:pr:`264`) by `Tom Augspurger`_
 - Improved performance for ``isdir`` (:pr:`259`) by `Nate Yoder`_
-* Increased the minimum required version of fsspec to 0.6.0
+- Increased the minimum required version of fsspec to 0.6.0
 
 .. _`Martin Durant`: https://github.com/martindurant
 .. _`Marius van Niekerk`: https://github.com/mariusvniekerk
